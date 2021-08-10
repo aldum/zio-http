@@ -10,9 +10,7 @@ import zhttp.http.{Header, Http, HTTP_CHARSET}
 import zhttp.service.UnsafeChannelExecutor
 import zio.stm.TQueue
 import zio.stream.ZStream
-import zio.{UIO, ZIO}
-
-import scala.annotation.unused
+import zio.{Chunk, UIO, ZIO}
 
 sealed trait HEndpoint[-R, +E] { self =>
   def cond(f: AnyRequest => Boolean): HEndpoint[R, E]                        = HEndpoint.Condition(f, self)
@@ -33,7 +31,6 @@ sealed trait HEndpoint[-R, +E] { self =>
       val completeBody: ByteBuf                                                               = Unpooled.compositeBuffer()
       var bufferedQueue: TQueue[HttpContent]                                                  = _
       var jRequest: HttpRequest                                                               = _
-      @unused var encoder: Encoder[_]                                                         = _
       var decoder: Decoder[_]                                                                 = _
 
       override def channelRegistered(ctx: ChannelHandlerContext): Unit = {
@@ -71,9 +68,8 @@ sealed trait HEndpoint[-R, +E] { self =>
                   } yield ()
                 }
 
-              case HEndpoint.Complete(decoder, encoder, http) =>
+              case HEndpoint.Complete(decoder, _, http) =>
                 adapter.completeHttpApp = http
-                adapter.encoder = encoder
                 adapter.decoder = decoder
                 adapter.isComplete = true
                 ctx.read(): Unit
@@ -86,10 +82,8 @@ sealed trait HEndpoint[-R, +E] { self =>
                   } yield ()
                 }
 
-              case HEndpoint.Buffered(decoder, encoder, http) =>
+              case HEndpoint.Buffered(decoder, _, http) =>
                 ctx.channel().config().setAutoRead(false)
-                adapter.encoder = encoder
-                adapter.decoder = decoder
                 adapter.isBuffered = true
 
                 unsafeEval {
@@ -106,7 +100,7 @@ sealed trait HEndpoint[-R, +E] { self =>
                           ZStream
                             .fromTQueue(bufferedQueue)
                             .takeWhile(!_.isInstanceOf[LastHttpContent])
-                            .map(_.content()),
+                            .map(buf => decoder.decode(buf.content())),
                         ),
                     )
 
@@ -221,6 +215,26 @@ object HEndpoint {
   def from[R, E](
     http: Http[R, E, AnyRequest, HResponse[R, E, ByteBuf]],
   )(implicit encoder: Encoder[ByteBuf], ev: P4): HEndpoint[R, E] =
+    SomeRequest(encoder, http)
+
+  def chunked[R, E](
+    http: Http[R, E, Any, HResponse[R, E, Chunk[Byte]]],
+  )(implicit encoder: Encoder[Chunk[Byte]], ev: P1): HEndpoint[R, E] =
+    Response(encoder, http)
+
+  def chunked[R, E](
+    http: Http[R, E, CompleteRequest[Chunk[Byte]], HResponse[R, E, Chunk[Byte]]],
+  )(implicit decoder: Decoder[Chunk[Byte]], encoder: Encoder[Chunk[Byte]], ev: P2): HEndpoint[R, E] =
+    Complete(decoder, encoder, http)
+
+  def chunked[R, E](
+    http: Http[R, E, BufferedRequest[Chunk[Byte]], HResponse[R, E, Chunk[Byte]]],
+  )(implicit decoder: Decoder[Chunk[Byte]], encoder: Encoder[Chunk[Byte]], ev: P3): HEndpoint[R, E] =
+    Buffered(decoder, encoder, http)
+
+  def chunked[R, E](
+    http: Http[R, E, AnyRequest, HResponse[R, E, Chunk[Byte]]],
+  )(implicit encoder: Encoder[Chunk[Byte]], ev: P4): HEndpoint[R, E] =
     SomeRequest(encoder, http)
 
   def fail[E](cause: E): HEndpoint[Any, E] = HEndpoint.Fail(cause)

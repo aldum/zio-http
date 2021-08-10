@@ -37,11 +37,18 @@ trait HttpMessageAssertion {
       case _             => None
     })
 
-  def isCompleteRequest[A](assertion: Assertion[CompleteRequest[ByteBuf]]): Assertion[A] =
-    Assertion.assertionRec("isCompleteRequest")(param(assertion))(assertion)({
+  def isCompleteByteRequest[A](assertion: Assertion[CompleteRequest[ByteBuf]]): Assertion[A] =
+    Assertion.assertionRec("isCompleteByteRequest")(param(assertion))(assertion)({
       case msg: CompleteRequest[_] if msg.content.isInstanceOf[ByteBuf] =>
         Option(msg.asInstanceOf[CompleteRequest[ByteBuf]])
       case _                                                            => None
+    })
+
+  def isCompleteChunkRequest[A](assertion: Assertion[CompleteRequest[Chunk[Byte]]]): Assertion[A] =
+    Assertion.assertionRec("isCompleteChunkRequest")(param(assertion))(assertion)({
+      case msg: CompleteRequest[_] if msg.content.isInstanceOf[Chunk[_]] =>
+        Option(msg.asInstanceOf[CompleteRequest[Chunk[Byte]]])
+      case _                                                             => None
     })
 
   def isBufferedRequest[A](assertion: Assertion[BufferedRequest[ByteBuf]]): Assertion[A] =
@@ -65,8 +72,11 @@ trait HttpMessageAssertion {
   def status(code: Int): Assertion[HttpResponse] =
     Assertion.assertion("status")(param(code))(_.status().code() == code)
 
-  def content[A](text: String): Assertion[CompleteRequest[ByteBuf]] =
-    Assertion.assertion("content")(param(text))(_.content.toString(HTTP_CHARSET) == text)
+  def byteBufContent[A](text: String): Assertion[CompleteRequest[ByteBuf]] =
+    Assertion.assertion("byteBufContent")(param(text))(_.content.toString(HTTP_CHARSET) == text)
+
+  def chunkedContent[A](text: String): Assertion[CompleteRequest[Chunk[Byte]]] =
+    Assertion.assertion("chunkedContent")(param(text))(_.content.map(_.toChar).mkString("").trim == text)
 
   def url(url: String): Assertion[HRequest] =
     Assertion.assertion("status")(param(url))(_.url.asString == url)
@@ -125,10 +135,11 @@ trait HttpMessageAssertion {
   } yield assert(req)(assertion)
 
   /**
-   * Creates an HEndpoint internally that requires a BufferedRequest. Allows asserting on the content of the request
-   * using the `assertion` parameter.
+   * Creates an HEndpoint internally that requires a BufferedRequest using a `ByteBuf` as an encoding for it's data.
+   * Allows asserting on the content of the request using the `assertion` parameter.
    */
-  def assertBufferedRequestContent[R, E](
+
+  def assertBufferedByteRequestContent[R, E](
     url: String = "/",
     method: HttpMethod = HttpMethod.POST,
     header: HttpHeaders = EmptyHttpHeaders.INSTANCE,
@@ -149,6 +160,32 @@ trait HttpMessageAssertion {
 
     req <- promise.await
   } yield assert(req.toList.map(bytes => bytes.toString(HTTP_CHARSET)))(assertion)
+
+  /**
+   * Creates an HEndpoint internally that requires a BufferedRequest using a `Chunk[Byte]` as an encoding for it's data.
+   * Allows asserting on the content of the request using the `assertion` parameter.
+   */
+  def assertBufferedChunkRequestContent[R, E](
+    url: String = "/",
+    method: HttpMethod = HttpMethod.POST,
+    header: HttpHeaders = EmptyHttpHeaders.INSTANCE,
+    content: Iterable[String] = Nil,
+  )(
+    assertion: Assertion[Iterable[String]],
+  ): ZIO[EventLoopGroup with R, E, TestResult] = for {
+    promise <- Promise.make[Nothing, Chunk[Chunk[Byte]]]
+    proxy   <- ChannelProxy.make(
+      HEndpoint.chunked(
+        Http.collectM[BufferedRequest[Chunk[Byte]]](req => req.content.runCollect.tap(promise.succeed) as HResponse()),
+      ),
+    )
+
+    _ <- proxy.request(url, method, header)
+    _ <- proxy.data(content)
+    _ <- proxy.end
+
+    req <- promise.await
+  } yield assert(req.map(_.map(_.toChar).mkString("")))(assertion)
 
   /**
    * Creates an HEndpoint internally that requires a BufferedRequest. Allows asserting on any field of the request using
@@ -172,7 +209,7 @@ trait HttpMessageAssertion {
    * Creates an HEndpoint internally that requires a CompleteRequest. The request to be sent can be configured via the
    * `f` function. Allows any kind of custom assertion on the CompleteRequest.
    */
-  def assertCompleteRequest[R, E](f: ChannelProxy => ZIO[R, E, Any])(
+  def assertCompleteByteRequest[R, E](f: ChannelProxy => ZIO[R, E, Any])(
     assertion: Assertion[CompleteRequest[ByteBuf]],
   ): ZIO[EventLoopGroup with R, E, TestResult] = for {
     promise <- Promise.make[Nothing, CompleteRequest[ByteBuf]]
@@ -184,10 +221,25 @@ trait HttpMessageAssertion {
   } yield assert(req)(assertion)
 
   /**
+   * Creates an HEndpoint internally that requires a CompleteRequest. The request to be sent can be configured via the
+   * `f` function. Allows any kind of custom assertion on the CompleteRequest.
+   */
+  def assertCompleteChunkRequest[R, E](f: ChannelProxy => ZIO[R, E, Any])(
+    assertion: Assertion[CompleteRequest[Chunk[Byte]]],
+  ): ZIO[EventLoopGroup with R, E, TestResult] = for {
+    promise <- Promise.make[Nothing, CompleteRequest[Chunk[Byte]]]
+    proxy   <- ChannelProxy.make(
+      HEndpoint.chunked(Http.collectM[CompleteRequest[Chunk[Byte]]](req => promise.succeed(req) as HResponse())),
+    )
+    _       <- f(proxy)
+    req     <- promise.await
+  } yield assert(req)(assertion)
+
+  /**
    * Creates an HEndpoint internally that requires a CompleteRequest. Allows asserting on any field of the request using
    * the `assertion` parameter.
    */
-  def assertCompleteRequest(
+  def assertCompleteByteRequest(
     url: String = "/",
     method: HttpMethod = HttpMethod.GET,
     header: HttpHeaders = EmptyHttpHeaders.INSTANCE,
@@ -195,7 +247,25 @@ trait HttpMessageAssertion {
   )(
     assertion: Assertion[CompleteRequest[ByteBuf]],
   ): ZIO[EventLoopGroup, Nothing, TestResult] =
-    assertCompleteRequest(proxy =>
+    assertCompleteByteRequest(proxy =>
+      proxy.request(url, method, header) *>
+        ZIO.foreach(content)(proxy.data(_)) *>
+        proxy.end,
+    )(assertion)
+
+  /**
+   * Creates an HEndpoint internally that requires a CompleteRequest. Allows asserting on any field of the request using
+   * the `assertion` parameter.
+   */
+  def assertCompleteChunkRequest(
+    url: String = "/",
+    method: HttpMethod = HttpMethod.GET,
+    header: HttpHeaders = EmptyHttpHeaders.INSTANCE,
+    content: Iterable[String] = Nil,
+  )(
+    assertion: Assertion[CompleteRequest[Chunk[Byte]]],
+  ): ZIO[EventLoopGroup, Nothing, TestResult] =
+    assertCompleteChunkRequest(proxy =>
       proxy.request(url, method, header) *>
         ZIO.foreach(content)(proxy.data(_)) *>
         proxy.end,

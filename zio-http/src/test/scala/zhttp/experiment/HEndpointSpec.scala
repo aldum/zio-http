@@ -105,7 +105,10 @@ object HEndpointSpec extends DefaultRunnableSpec with HttpMessageAssertion {
         )
       },
       testM("req.content is 'ABCDE'") {
-        assertBufferedRequestContent(content = "ABCDE".split(""))(equalTo(List("A", "B", "C", "D", "E")))
+        assertBufferedByteRequestContent(content = "ABCDE".split(""))(equalTo(List("A", "B", "C", "D", "E")))
+      } @@ nonFlaky,
+      testM("req.content is 'ABCDE'") {
+        assertBufferedChunkRequestContent(content = "ABCDE".split(""))(equalTo(List("A", "B", "C", "D", "E")))
       } @@ nonFlaky,
       testM("req.url is '/abc'") {
         assertBufferedRequest("/abc", HttpMethod.GET)(isRequest(url("/abc")))
@@ -148,21 +151,26 @@ object HEndpointSpec extends DefaultRunnableSpec with HttpMessageAssertion {
         )
       },
       testM("req.content is 'ABCD'") {
-        assertCompleteRequest(content = List("A", "B", "C", "D"))(
-          isCompleteRequest(content("ABCD")),
+        assertCompleteByteRequest(content = List("A", "B", "C", "D"))(
+          isCompleteByteRequest(byteBufContent("ABCD")),
+        )
+      },
+      testM("req.content is 'ABCD'") {
+        assertCompleteChunkRequest(content = List("A", "B", "C", "D"))(
+          isCompleteChunkRequest(chunkedContent("ABCD")),
         )
       },
       testM("req.url is '/abc'") {
-        assertCompleteRequest("/abc", HttpMethod.GET)(isRequest(url("/abc")))
+        assertCompleteByteRequest("/abc", HttpMethod.GET)(isRequest(url("/abc")))
       },
       testM("req.method is 'GET'") {
-        assertCompleteRequest(method = HttpMethod.GET)(isRequest(method(Method.GET)))
+        assertCompleteByteRequest(method = HttpMethod.GET)(isRequest(method(Method.GET)))
       },
       testM("req.method is 'POST'") {
-        assertCompleteRequest(method = HttpMethod.POST)(isRequest(method(Method.POST)))
+        assertCompleteByteRequest(method = HttpMethod.POST)(isRequest(method(Method.POST)))
       },
       testM("req.header is 'H1: K1'") {
-        assertCompleteRequest(header = header.set("H1", "K1"))(
+        assertCompleteByteRequest(header = header.set("H1", "K1"))(
           isRequest(header(Header("H1", "K1"))),
         )
       },
