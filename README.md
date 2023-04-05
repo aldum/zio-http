@@ -13,7 +13,7 @@ ZIO Http is a scala library for building http apps. It is powered by ZIO and [ne
 Setup via `build.sbt`:
 
 ```scala
-libraryDependencies += "dev.zio" %% "zio-http" % "0.0.5"
+libraryDependencies += "dev.zio" %% "zio-http" % "1.0.0.0-RC17"
 ```
 
 **NOTES ON VERSIONING:**
